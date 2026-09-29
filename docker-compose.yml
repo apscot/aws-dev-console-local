@@ -1,0 +1,150 @@
+name: loyalty-dev-console
+
+services:
+  tunnel-manager:
+    build:
+      context: ./tunnel-manager
+    image: loyalty-dev-console-tunnel-manager
+    container_name: loyalty-tunnel-manager
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AWS_REGION: ${AWS_REGION:?AWS_REGION must be set in .env}
+      AWS_DEFAULT_REGION: ${AWS_REGION:?AWS_REGION must be set in .env}
+      AWS_PROFILE: ${AWS_PROFILE:-}
+      BASTION_ID: ${BASTION_ID:?BASTION_ID must be set in .env}
+      RDS_HOST: ${RDS_HOST:?RDS_HOST must be set in .env}
+      MSK_B1_HOST: ${MSK_B1_HOST:?MSK_B1_HOST must be set in .env}
+      MSK_B2_HOST: ${MSK_B2_HOST:?MSK_B2_HOST must be set in .env}
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro
+    networks:
+      - loyalty-dev
+
+  secret-init:
+    build:
+      context: ./tunnel-manager
+    image: loyalty-dev-console-tunnel-manager
+    container_name: loyalty-secret-init
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      AWS_REGION: ${AWS_REGION:?AWS_REGION must be set in .env}
+      AWS_DEFAULT_REGION: ${AWS_REGION:?AWS_REGION must be set in .env}
+      AWS_PROFILE: ${AWS_PROFILE:-}
+      DB_SECRET_ID: ${DB_SECRET_ID:?DB_SECRET_ID must be set in .env}
+      PG_HOST: tunnel-manager
+      PG_PORT: "5432"
+      PG_MAINTENANCE_DB: postgres
+      OUT_DIR: /out
+      TEMPLATE: /template/servers.json.template
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro
+      - pgadmin-config:/out
+      - ./scripts/fetch-db-secret.sh:/fetch-db-secret.sh:ro
+      - ./pgadmin/servers.json.template:/template/servers.json.template:ro
+    entrypoint: ["/bin/bash", "/fetch-db-secret.sh"]
+    networks:
+      - loyalty-dev
+
+  msk-b1:
+    # Reuse tunnel-manager image (has socat) — no Docker Hub pull for alpine/socat
+    build:
+      context: ./tunnel-manager
+    image: loyalty-dev-console-tunnel-manager
+    container_name: loyalty-msk-b1
+    restart: unless-stopped
+    entrypoint: ["socat"]
+    command: ["TCP-LISTEN:9094,fork,reuseaddr", "TCP:tunnel-manager:9094"]
+    healthcheck:
+      disable: true
+    networks:
+      loyalty-dev:
+        aliases:
+          - ${MSK_B1_HOST:?MSK_B1_HOST must be set in .env}
+    depends_on:
+      tunnel-manager:
+        condition: service_healthy
+
+  msk-b2:
+    build:
+      context: ./tunnel-manager
+    image: loyalty-dev-console-tunnel-manager
+    container_name: loyalty-msk-b2
+    restart: unless-stopped
+    entrypoint: ["socat"]
+    # Brokers advertise :9094; local SSM maps b-2 → host 9095
+    command: ["TCP-LISTEN:9094,fork,reuseaddr", "TCP:tunnel-manager:9095"]
+    healthcheck:
+      disable: true
+    networks:
+      loyalty-dev:
+        aliases:
+          - ${MSK_B2_HOST:?MSK_B2_HOST must be set in .env}
+    depends_on:
+      tunnel-manager:
+        condition: service_healthy
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: loyalty-kafka-ui
+    restart: unless-stopped
+    ports:
+      - "8050:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: loyalty-dev-msk
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: ${MSK_B1_HOST:?MSK_B1_HOST must be set in .env}:9094,${MSK_B2_HOST:?MSK_B2_HOST must be set in .env}:9094
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SSL
+      # SSM port-forwards are high-latency; default Kafka timeouts cause empty/slow topic lists
+      KAFKA_CLUSTERS_0_PROPERTIES_REQUEST_TIMEOUT_MS: "90000"
+      KAFKA_CLUSTERS_0_PROPERTIES_DEFAULT_API_TIMEOUT_MS: "120000"
+      KAFKA_CLUSTERS_0_PROPERTIES_CONNECTIONS_MAX_IDLE_MS: "300000"
+      KAFKA_CLUSTERS_0_PROPERTIES_METADATA_MAX_AGE_MS: "120000"
+      KAFKA_CLUSTERS_0_PROPERTIES_SOCKET_CONNECTION_SETUP_TIMEOUT_MS: "30000"
+      KAFKA_CLUSTERS_0_PROPERTIES_SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS: "60000"
+      KAFKA_CLUSTERS_0_METRICS_PORT: ""
+      DYNAMIC_CONFIG_ENABLED: "true"
+      # Required in v0.7.2+ for message Smart filters (headers / Groovy)
+      FILTERING_GROOVY_ENABLED: "true"
+    networks:
+      - loyalty-dev
+    depends_on:
+      tunnel-manager:
+        condition: service_healthy
+      msk-b1:
+        condition: service_started
+      msk-b2:
+        condition: service_started
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: loyalty-pgadmin
+    restart: unless-stopped
+    ports:
+      - "5252:80"
+    env_file:
+      - .env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:?PGADMIN_DEFAULT_EMAIL must be set in .env}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?PGADMIN_DEFAULT_PASSWORD must be set in .env}
+      PGADMIN_SERVER_JSON_FILE: /config/servers.json
+      PGPASSFILE: /config/pgpass
+    volumes:
+      - pgadmin-config:/config:ro
+      - pgadmin-data:/var/lib/pgadmin
+    networks:
+      - loyalty-dev
+    depends_on:
+      tunnel-manager:
+        condition: service_healthy
+      secret-init:
+        condition: service_completed_successfully
+
+networks:
+  loyalty-dev:
+    driver: bridge
+
+volumes:
+  pgadmin-config:
+  pgadmin-data:

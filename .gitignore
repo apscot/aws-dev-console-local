@@ -1,0 +1,9 @@
+.env
+PLAN.md
+.idea/
+*.pem
+*.key
+.DS_Store
+pgadmin-data/
+**/servers.json
+!pgadmin/servers.json.template

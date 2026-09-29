@@ -1,0 +1,16 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "AwsDev-PG",
+      "Group": "Servers",
+      "Host": "__PG_HOST__",
+      "Port": __PG_PORT__,
+      "MaintenanceDB": "__PG_MAINTENANCE_DB__",
+      "Username": "__PG_USERNAME__",
+      "PassFile": "__PG_PASSFILE__",
+      "SSLMode": "prefer",
+      "Timeout": 10,
+      "Comment": "Loyalty RDS via SSM tunnel-manager"
+    }
+  }
+}
