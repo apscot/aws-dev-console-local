@@ -60,3 +60,44 @@ To rebuild the tunnel image after changing its Dockerfile:
 ```bash
 ./dev.sh build
 ```
+
+## Required AWS Access
+
+The selected AWS profile needs permission to start SSM port-forwarding sessions
+through the bastion and read the configured database secret. Direct RDS, MSK,
+EC2, and IAM administration permissions are not required.
+
+```json
+{
+	"Version": "2012-10-17",
+	"Statement": [
+		{
+			"Sid": "StartPortForwardingSession",
+			"Effect": "Allow",
+			"Action": "ssm:StartSession",
+			"Resource": [
+				"arn:aws:ec2:REGION:ACCOUNT_ID:instance/BASTION_INSTANCE_ID",
+				"arn:aws:ssm:REGION::document/AWS-StartPortForwardingSessionToRemoteHost"
+			]
+		},
+		{
+			"Sid": "ManageOwnSessions",
+			"Effect": "Allow",
+			"Action": [
+				"ssm:TerminateSession",
+				"ssm:ResumeSession"
+			],
+			"Resource": "arn:aws:ssm:REGION:ACCOUNT_ID:session/${aws:username}-*"
+		},
+		{
+			"Sid": "ReadDatabaseSecret",
+			"Effect": "Allow",
+			"Action": "secretsmanager:GetSecretValue",
+			"Resource": "SECRET_ARN"
+		}
+	]
+}
+```
+
+Add `kms:Decrypt` for the specific KMS key only when the secret uses a
+customer-managed KMS key.
